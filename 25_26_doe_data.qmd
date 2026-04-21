@@ -1,0 +1,311 @@
+---
+title: "25_26_doe_data"
+---
+
+## Import package
+
+```{r}
+library(tidyverse)
+library(readxl)
+library(janitor)
+library(stringr)
+library(purrr)
+library(stringdist)
+library(openxlsx)
+library(stringr)
+```
+
+## Import data
+
+```{r}
+stff <- read.csv("C:/Users/Xurui/Desktop/25_26_school_year_doe/staff.csv")
+```
+
+```{r}
+staff_suffix <- read.csv("C:/Users/Xurui/Desktop/25_26_school_year_doe/staff_suffix.csv")
+```
+
+```{r}
+iteracy_matrix <- read.csv("C:/Users/Xurui/Desktop/25_26_school_year_doe/25-26_Literacy_matrix.csv")
+```
+
+```{r}
+teacher_course <- read_csv("C:/Users/Xurui/Desktop/25_26_school_year_doe/25-26_teacher_course.csv")
+```
+
+## explore
+
+```{r}
+stff %>%
+  count(TEACHER_ID) %>%
+  filter(n > 1)
+```
+
+```{r}
+qc_teacher_id <- stff %>%
+  summarise(
+    total_rows = n(),
+    unique_teacher = n_distinct(TEACHER_ID),
+    missing_teacher = sum(is.na(TEACHER_ID))
+  )
+
+qc_teacher_id
+```
+
+```{r}
+qc_teacher_id_1 <- staff_suffix %>%
+  summarise(
+    total_rows = n(),
+    unique_teacher = n_distinct(TEACHER_ID),
+    missing_teacher = sum(is.na(TEACHER_ID))
+  )
+
+qc_teacher_id_1
+
+```
+
+Filter out duplicate data\
+function:
+
+```{r}
+
+
+# =========================================================
+# Function: split unique TEACHER_ID rows and duplicated rows
+# 功能：
+# 1. 根据 TEACHER_ID 统计重复情况
+# 2. 保留唯一 TEACHER_ID 的数据
+# 3. 把重复 TEACHER_ID 的数据单独保存
+# 4. 给数据加上来源标签 source
+# =========================================================
+split_teacher_data <- function(df, source_name) {
+  
+  # 第一步：计算每个 TEACHER_ID 出现的次数
+  teacher_count <- df %>%
+    count(TEACHER_ID, name = "teacher_id_n")
+  
+  # 第二步：把次数合并回原始数据
+  df_with_count <- df %>%
+    left_join(teacher_count, by = "TEACHER_ID")
+  
+  # 第三步：保留 TEACHER_ID 只出现 1 次的行
+  df_unique <- df_with_count %>%
+    filter(teacher_id_n == 1) %>%
+    mutate(source = source_name)
+  
+  # 第四步：把重复的 TEACHER_ID 行单独保存
+  df_duplicate <- df_with_count %>%
+    filter(teacher_id_n > 1) %>%
+    mutate(source = source_name)
+  
+  # 第五步：重复 TEACHER_ID 的 summary（每个ID重复几次）
+  dup_summary <- teacher_count %>%
+    filter(teacher_id_n > 1) %>%
+    arrange(desc(teacher_id_n))
+  
+  # 返回一个 list，方便后续调用
+  return(list(
+    unique_data = df_unique,
+    duplicate_data = df_duplicate,
+    duplicate_summary = dup_summary
+  ))
+}
+```
+
+```{r}
+# 对第一个数据库处理
+staff_2526_result <- split_teacher_data(
+  df = stff,
+  source_name = "stff"
+)
+
+# 对第二个数据库处理
+staff_july_result <- split_teacher_data(
+  df = staff_suffix,
+  source_name = "staff_suffix"
+)
+```
+
+```{r}
+# 第一个数据库：唯一 / 重复 / 重复summary
+staff_2526_unique <- staff_2526_result$unique_data
+staff_2526_duplicate <- staff_2526_result$duplicate_data
+staff_2526_dup_summary <- staff_2526_result$duplicate_summary
+
+# 第二个数据库：唯一 / 重复 / 重复summary
+staff_july_unique <- staff_july_result$unique_data
+staff_july_duplicate <- staff_july_result$duplicate_data
+staff_july_dup_summary <- staff_july_result$duplicate_summary
+```
+
+export duplication
+
+```{r}
+write.csv(staff_2526_duplicate, "staff_2526_duplicate.csv", row.names = FALSE)
+write.csv(staff_july_duplicate, "staff_suffix.csv", row.names = FALSE)
+```
+
+export unique teacher\
+
+```{r}
+write.csv(staff_2526_unique,"staff_2526_uqniue.csv", row.names = FALSE)
+write.csv(staff_july_unique,"staff_suffix_unique.csv", row.names = FALSE)
+```
+
+function add suffix
+
+```{r}
+# Function: add suffix to all variables except key columns
+# 功能：
+# 给所有列加后缀，但保留 key（默认 TEACHER_ID 不变）
+# =========================================================
+add_suffix_except <- function(df, suffix, keep = "TEACHER_ID") {
+  
+  df_renamed <- df %>%
+    rename_with(
+      .fn = ~ ifelse(.x %in% keep, .x, paste0(.x, suffix))
+    )
+  
+  return(df_renamed)
+}
+```
+
+```{r}
+staff_2526_unique_sfx <- add_suffix_except(
+  df = staff_2526_unique,
+  suffix = "_2526"
+)
+```
+
+unique data merge
+
+```{r}
+staff_merged <- staff_july_unique %>%
+  full_join(
+    staff_2526_unique_sfx,
+    by = "TEACHER_ID"
+  )
+```
+
+## qc
+
+```{r}
+staff_merged %>%
+  summarise(
+    total_rows = n(),
+    unique_teacher = n_distinct(TEACHER_ID)
+  )
+```
+
+```{r}
+
+staff_merged_qc <- staff_merged %>%
+  mutate(
+    source_flag = case_when(
+      !is.na(source) & !is.na(source_2526) ~ "both",
+      !is.na(source) & is.na(source_2526) ~ "only_july",
+      is.na(source) & !is.na(source_2526) ~ "only_2526",
+      TRUE ~ NA_character_
+    )
+  )
+
+```
+
+## For duplication data merge
+
+Check the combination of district and teacher id
+
+```{r}
+staff_july_duplicate_check <- staff_july_duplicate %>%
+  count(TEACHER_ID, DISTRICT_SERVICE, name = "n") %>%
+  filter(n > 1) %>%
+  arrange(desc(n))
+
+staff_july_duplicate_check
+```
+
+```{r}
+staff_2526_duplicate_check <- staff_2526_duplicate %>%
+  count(TEACHER_ID, DISTRICT_SERVICE, name = "n") %>%
+  filter(n > 1) %>%
+  arrange(desc(n))
+
+staff_2526_duplicate_check
+```
+
+```{r}
+staff_july_duplicate %>%
+  summarise(
+    total_rows = n(),
+    distinct_teacher = n_distinct(TEACHER_ID),
+    distinct_teacher_district = n_distinct(paste(TEACHER_ID, DISTRICT_SERVICE, sep = "__"))
+  )
+```
+
+```{r}
+staff_2526_duplicate %>%
+  summarise(
+    total_rows = n(),
+    distinct_teacher = n_distinct(TEACHER_ID),
+    distinct_teacher_district = n_distinct(paste(TEACHER_ID, DISTRICT_SERVICE, sep = "__"))
+  )
+```
+
+```{r}
+nrow(staff_july_duplicate_check)
+nrow(staff_2526_duplicate_check)
+```
+
+```{r}
+staff_2526_duplicate_sfx <- add_suffix_except(
+  df = staff_2526_duplicate,
+  suffix = "_2526",
+  keep = c("TEACHER_ID", "DISTRICT_SERVICE")
+)
+```
+
+```{r}
+staff_duplicate_merged <- staff_july_duplicate %>%
+  full_join(
+    staff_2526_duplicate_sfx,
+    by = c("TEACHER_ID", "DISTRICT_SERVICE")
+  )
+```
+
+```{r}
+staff_duplicate_merged <- staff_duplicate_merged %>%
+  mutate(
+    source_flag = case_when(
+      !is.na(source) & !is.na(source_2526) ~ "both",
+      !is.na(source) & is.na(source_2526) ~ "only_july",
+      is.na(source) & !is.na(source_2526) ~ "only_2526",
+      TRUE ~ NA_character_
+    )
+  )
+```
+
+```{r}
+staff_duplicate_merged %>%
+  count(source_flag)
+```
+
+```{r}
+setdiff(names(staff_merged), names(staff_duplicate_merged))
+setdiff(names(staff_duplicate_merged), names(staff_merged))
+```
+
+```{r}
+staff_duplicate_merged <- staff_duplicate_merged %>%
+  mutate(DISTRICT_SERVICE_2526 = DISTRICT_SERVICE)
+```
+
+```{r}
+staff_final_merged <- bind_rows(
+  staff_merged,
+  staff_duplicate_merged
+)
+```
+
+```{r}
+staff_final_merged %>% count(teacher_id_n_2526)
+```

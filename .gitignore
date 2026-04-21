@@ -1,0 +1,29 @@
+# R / RStudio
+.Rhistory
+.RData
+.Ruserdata
+.Rproj.user/
+
+# Temporary files
+.RDataTmp
+*.tmp
+*.log
+
+# Quarto / render output
+.quarto/
+*_files/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Large data files
+data_raw/
+data_output/
+
+# Excel and csv outputs (optional, if you do not want to track them)
+*.xlsx
+*.xls
+
+# If large raw csv should not be tracked
+*.csv
