@@ -2,7 +2,7 @@
 title: "25_26_doe_data"
 ---
 
-## Import package
+## Import package and trying to connect snowflake
 
 ```{r}
 library(tidyverse)
@@ -13,24 +13,50 @@ library(purrr)
 library(stringdist)
 library(openxlsx)
 library(stringr)
+#The following package is for connecting to Snowflake.
+library(DBI)
+library(odbc)
+library(openssl)  # To read private key
 ```
 
-## Import data
+## Connect to Snowflake
 
 ```{r}
-stff <- read.csv("C:/Users/Xurui/Desktop/25_26_school_year_doe/staff.csv")
+# Connect to Snowflake using key-pair authentication
+
+con <- dbConnect(odbc::odbc(),
+                 Driver = "SnowflakeDSIIDriver", #from UFIT
+                 Server = "ufl-datahub.snowflakecomputing.com", #from LC Data team
+                 UID = "xu.rui@ufl.edu", #from UFIT
+                 authenticator = "externalbrowser", #from UFIT
+                 Warehouse     = "REPORTING", #from LC Data team
+                 Database      = "PUB_LAKE_LASTINGER" #can specify specific database needing to access
+                #Schema        = "ADD" #can specify specific Schema - aka folders - needing to access
+)
+
+# Look in Connections - top right RStudio - for Database/Schema list
+```
+
+## Import data in snowflake
+
+```{r}
+stff <- tbl(con,dbplyr::in_schema("RAW_DOE","01_15_2026_STAFF"))
 ```
 
 ```{r}
-staff_suffix <- read.csv("C:/Users/Xurui/Desktop/25_26_school_year_doe/staff_suffix.csv")
+staff_suffix <- tbl(con,dbplyr::in_schema("RAW_DOE","02_13_2026_PERA_4472B_STAFF_CERTIFICATION_DATA_2025_26_FS2"))
 ```
 
 ```{r}
-iteracy_matrix <- read.csv("C:/Users/Xurui/Desktop/25_26_school_year_doe/25-26_Literacy_matrix.csv")
+Literacy_matrix <-  tbl(con,dbplyr::in_schema("LAKE_LASTINGER","SP_25_26_STIPENDS_LITERACY_MATRIX_FY25_26"))
 ```
 
 ```{r}
-teacher_course <- read_csv("C:/Users/Xurui/Desktop/25_26_school_year_doe/25-26_teacher_course.csv")
+teacher_course <- tbl(con,dbplyr::in_schema("RAW_DOE","01_15_2026_TEACHER_COURSE"))
+```
+
+```{r}
+student_demo <-  tbl(con,dbplyr::in_schema("RAW_DOE","01_15_2026_STUDENT_DEMO"))
 ```
 
 ## explore
@@ -46,10 +72,13 @@ qc_teacher_id <- stff %>%
   summarise(
     total_rows = n(),
     unique_teacher = n_distinct(TEACHER_ID),
-    missing_teacher = sum(is.na(TEACHER_ID))
-  )
+    missing_teacher = sum(ifelse(is.na(TEACHER_ID), 1L, 0L), na.rm = TRUE)#note: The is.na function cannot be recognized in Snowflake. Therefore, we must switch to a method that is compatible with sql.
+  ) %>%
+  collect()
 
 qc_teacher_id
+
+
 ```
 
 ```{r}
@@ -57,8 +86,9 @@ qc_teacher_id_1 <- staff_suffix %>%
   summarise(
     total_rows = n(),
     unique_teacher = n_distinct(TEACHER_ID),
-    missing_teacher = sum(is.na(TEACHER_ID))
-  )
+    missing_teacher = sum(ifelse(is.na(TEACHER_ID), 1L, 0L), na.rm = TRUE)#same issue
+  ) %>%
+  collect()
 
 qc_teacher_id_1
 
@@ -177,7 +207,7 @@ staff_2526_unique_sfx <- add_suffix_except(
 )
 ```
 
-unique data merge
+## unique data merge
 
 ```{r}
 staff_merged <- staff_july_unique %>%
@@ -290,8 +320,8 @@ staff_duplicate_merged %>%
 ```
 
 ```{r}
-setdiff(names(staff_merged), names(staff_duplicate_merged))
-setdiff(names(staff_duplicate_merged), names(staff_merged))
+setdiff(colnames(staff_merged), colnames(staff_duplicate_merged))
+setdiff(colnames(staff_duplicate_merged), colnames(staff_merged))
 ```
 
 ```{r}
@@ -300,12 +330,88 @@ staff_duplicate_merged <- staff_duplicate_merged %>%
 ```
 
 ```{r}
-staff_final_merged <- bind_rows(
+#note: The bind_row function cannot be used directly on Snowflake. Therefore, we need to replace it with a compatible Snowflake function called union_all.
+staff_final_merged <- union_all(
   staff_merged,
   staff_duplicate_merged
-)
+) %>% 
+  collect()
 ```
 
 ```{r}
 staff_final_merged %>% count(teacher_id_n_2526)
+```
+
+```{r}
+write.csv(staff_final_merged,
+      "survey2_2526_twodatasets_merge.csv",
+row.names = FALSE)
+```
+
+The section above successfully merged the two staff databases, and the results look good.
+
+Next, I will use the literacy matrix to merge the staff datasets.
+
+```{r}
+df_dcf <- literacy_matrix %>%
+  mutate(
+    DCF_clean = str_replace_all(as.character(DCF), "[^0-9]", "")
+  )
+
+df_cert <- staff_final_merged %>%
+  mutate(
+    Cert_clean = str_replace_all(as.character(CERTIFICATE_FILE_NUMBER), "[^0-9]", "")
+  )
+
+```
+
+Exact match
+
+```{r}
+exact_match <- df_dcf %>%
+  left_join(
+    df_cert,
+    by = c("DCF_clean" = "Cert_clean")
+  ) %>%
+  mutate(match_type = if_else(!is.na(CERTIFICATE_FILE_NUMBER), "exact_match", NA_character_))
+```
+
+Find the failed match
+
+```{r}
+dcf_no_match <- exact_match %>%
+  filter(is.na(CERTIFICATE_FILE_NUMBER)) %>%
+  select(names(df_dcf))
+```
+
+```{r}
+write.csv(dcf_no_match,"failed_mathch_by_DCF.csv",row.names = FALSE)
+```
+
+for failed match need to double check
+
+```{r}
+contains_match <- dcf_no_match %>%
+  rowwise() %>%
+  mutate(
+    match_row = list(
+      df_cert %>%
+        filter(str_detect(Cert_clean, fixed(DCF_clean)))
+    )
+  ) %>%
+  ungroup()
+```
+
+```{r}
+contains_match_expanded <- contains_match %>%
+  tidyr::unnest(match_row) %>%
+  mutate(match_type = "contains_match")
+```
+
+```{r}
+contains_match_check <- contains_match_expanded %>%
+  count(DCF, name = "n_match") %>%
+  filter(n_match > 1)
+
+contains_match_check
 ```
