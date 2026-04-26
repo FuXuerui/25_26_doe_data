@@ -350,13 +350,13 @@ row.names = FALSE)
 
 The section above successfully merged the two staff databases, and the results look good.
 
-Next, I will use the literacy matrix to merge the staff datasets.
+## Next, I will use the literacy matrix to merge the staff datasets. 
 
 ```{r}
-df_dcf <- literacy_matrix %>%
+df_dcf <- Literacy_matrix %>%
   mutate(
     DCF_clean = str_replace_all(as.character(DCF), "[^0-9]", "")
-  )
+  ) %>% collect()
 
 df_cert <- staff_final_merged %>%
   mutate(
@@ -385,33 +385,25 @@ dcf_no_match <- exact_match %>%
 ```
 
 ```{r}
+write.csv(exact_match,"Literacy_Matrix_with_staff_inf.csv",row.names = FALSE)
+```
+
+```{r}
 write.csv(dcf_no_match,"failed_mathch_by_DCF.csv",row.names = FALSE)
 ```
 
-for failed match need to double check
+I have manually checked it, and the field match looks acceptable.
+
+The next step will be to merge the teacher courses and student demographics.
 
 ```{r}
-contains_match <- dcf_no_match %>%
-  rowwise() %>%
-  mutate(
-    match_row = list(
-      df_cert %>%
-        filter(str_detect(Cert_clean, fixed(DCF_clean)))
-    )
-  ) %>%
-  ungroup()
+
 ```
 
 ```{r}
-contains_match_expanded <- contains_match %>%
-  tidyr::unnest(match_row) %>%
-  mutate(match_type = "contains_match")
+
 ```
 
 ```{r}
-contains_match_check <- contains_match_expanded %>%
-  count(DCF, name = "n_match") %>%
-  filter(n_match > 1)
 
-contains_match_check
 ```
