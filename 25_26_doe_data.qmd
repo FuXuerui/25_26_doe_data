@@ -396,14 +396,53 @@ I have manually checked it, and the field match looks acceptable.
 
 The next step will be to merge the teacher courses and student demographics.
 
-```{r}
+note:
 
+Currently, the workflow is still a mix of Snowflake and R.
+
+My preliminary plan is to handle the data merging in Snowflake, as it would be much more efficient. However, since the code hasn't been converted yet, I will first validate my logic and generate the results before finding a way to refactor the code.
+
+```{r}
+#Load TeacherCourse locally.
+teacher_course_local <- teacher_course %>% collect()
 ```
 
 ```{r}
-
+treatment_data <- exact_match %>% 
+  left_join(teacher_course_local,
+            by=c("TEACHER_ID",
+            "DISTRICT_SERVICE"="DISTRICT_INST"))
 ```
 
 ```{r}
-
+treatment_data %>%
+  count(TEACHER_ID, DISTRICT_SERVICE) %>%
+  filter(n > 1)
 ```
+
+Check the database here for instances where a teacherID exists, but student information is missing.
+
+```{r}
+treatment_data %>%
+  filter(!is.na(TEACHER_ID) & is.na(FLEID)) %>%
+  summarise(n = n())
+```
+
+```{r}
+treatment_no_studentinfo <- treatment_data %>%
+  filter(!is.na(TEACHER_ID) & is.na(FLEID))
+```
+
+```{r}
+missing_fle <- treatment_data %>%
+  filter(!is.na(TEACHER_ID) & is.na(FLEID)) %>%
+  select(TEACHER_ID) %>%
+  distinct()
+```
+
+```{r}
+teacher_course_check <- teacher_course_local %>%
+  filter(TEACHER_ID %in% missing_fle$TEACHER_ID)
+```
+
+The inspection is complete. I have confirmed that these teacher IDs are not in the teacher Courses data. need to double check and discuss how to handle this issue.
