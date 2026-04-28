@@ -350,7 +350,7 @@ row.names = FALSE)
 
 The section above successfully merged the two staff databases, and the results look good.
 
-## Next, I will use the literacy matrix to merge the staff datasets. 
+## Next, I will use the literacy matrix to merge the staff datasets.
 
 ```{r}
 df_dcf <- Literacy_matrix %>%
@@ -405,13 +405,22 @@ My preliminary plan is to handle the data merging in Snowflake, as it would be m
 ```{r}
 #Load TeacherCourse locally.
 teacher_course_local <- teacher_course %>% collect()
+
+```
+
+```{r}
+teacher_course_local <- teacher_course_local %>% 
+  add_suffix_except(
+  suffix = "_tc",
+  keep = "TEACHER_ID"
+  )
 ```
 
 ```{r}
 treatment_data <- exact_match %>% 
   left_join(teacher_course_local,
             by=c("TEACHER_ID",
-            "DISTRICT_SERVICE"="DISTRICT_INST"))
+            "DISTRICT_SERVICE"="DISTRICT_INST_tc"))
 ```
 
 ```{r}
@@ -424,18 +433,18 @@ Check the database here for instances where a teacherID exists, but student info
 
 ```{r}
 treatment_data %>%
-  filter(!is.na(TEACHER_ID) & is.na(FLEID)) %>%
+  filter(!is.na(TEACHER_ID) & is.na(FLEID_tc)) %>%
   summarise(n = n())
 ```
 
 ```{r}
 treatment_no_studentinfo <- treatment_data %>%
-  filter(!is.na(TEACHER_ID) & is.na(FLEID))
+  filter(!is.na(TEACHER_ID) & is.na(FLEID_tc))
 ```
 
 ```{r}
 missing_fle <- treatment_data %>%
-  filter(!is.na(TEACHER_ID) & is.na(FLEID)) %>%
+  filter(!is.na(TEACHER_ID) & is.na(FLEID_tc)) %>%
   select(TEACHER_ID) %>%
   distinct()
 ```
@@ -445,4 +454,108 @@ teacher_course_check <- teacher_course_local %>%
   filter(TEACHER_ID %in% missing_fle$TEACHER_ID)
 ```
 
+manually check
+
+```{r}
+teacher_course_local %>%
+  filter(TEACHER_ID == "OX7752QWM") %>% 
+  nrow()
+```
+
 The inspection is complete. I have confirmed that these teacher IDs are not in the teacher Courses data. need to double check and discuss how to handle this issue.
+
+### in this section I will merge student demo and duplication
+
+```{r}
+names(treatment_data)
+```
+
+```{r}
+treatment_data <- treatment_data %>% 
+  mutate(
+    DISTRICT_tc = as.numeric(as.character(DISTRICT_tc)),
+    SCHOOL_tc   = as.numeric(as.character(SCHOOL_tc)),
+    SchoolID_tc = DISTRICT_tc * 10000 + SCHOOL_tc,
+    UniqueID    = paste0(FLEID_tc, SchoolID_tc)
+  )
+```
+
+```{r}
+student_demo_local <- student_demo %>% collect()
+```
+
+```{r}
+student_demo_local <- student_demo_local %>% 
+  add_suffix_except(
+  suffix = "_demo",
+  keep = "FLEID"
+  )
+```
+
+```{r}
+student_demo_local <- student_demo_local %>% 
+  mutate(
+    DISTRICT_demo = as.numeric(as.character(DISTRICT_demo)),
+    SCHOOL_demo   = as.numeric(as.character(SCHOOL_demo)),
+    SchoolID_demo = DISTRICT_demo * 10000 + SCHOOL_demo,
+    UniqueID    = paste0(FLEID, SchoolID_demo)
+  )
+```
+
+```{r}
+dup_in_demo <- student_demo_local %>%
+  count(UniqueID) %>%
+  filter(n > 1) %>%
+  pull(UniqueID)
+```
+
+```{r}
+student_demo_local %>%
+  filter(UniqueID %in% dup_in_demo) %>%
+  summarise(n_71 = sum(DISTRICT_INST_demo == 71, na.rm = TRUE))
+
+```
+
+deduplication in student_demo drop district_inst ==71
+
+```{r}
+student_demo_clean <- student_demo_local %>%
+  group_by(UniqueID) %>%
+  filter(!(n() > 1 & DISTRICT_INST_demo == 71)) %>%
+  ungroup()
+```
+
+```{r}
+nrow(student_demo_local)
+nrow(student_demo_clean)
+```
+
+```{r}
+student_demo_clean %>%
+  count(UniqueID) %>%
+  filter(n > 1) %>%
+  arrange(desc(n))# need to manually check
+```
+
+```{r}
+treatment_data_final <- treatment_data %>% 
+  left_join(student_demo_clean,
+            by="UniqueID")
+```
+
+```{r}
+ treatment_data_final %>%
+  count(UniqueID) %>%
+  filter(n > 1) %>%
+  arrange(desc(n))
+```
+
+```{r}
+write.csv(treatment_data_final,
+          "main_treatment_data.csv",
+          row.names = FALSE)
+```
+
+```{r}
+dbDisconnect(con)
+```
