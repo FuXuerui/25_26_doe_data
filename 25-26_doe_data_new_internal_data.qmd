@@ -509,13 +509,142 @@ After updating the treatment dataset, it now contains a total of 7,721 observati
 
 Even after merging by certificate number, there are still 3,258 observations that could not be matched. For the next step, I will use email addresses to perform the subsequent merge.
 
-## certificate_2526
+## certificate_2526 
 
 ```{r}
-cert_no_match
+df_cert_2526 <- staff_final_merged %>%
+  mutate(
+    Cert_clean_2526 = str_to_upper(
+      str_replace_all(
+        as.character(CERTIFICATE_2526),
+        "[^A-Za-z0-9]",
+        ""
+      )
+    )
+  ) %>%
+  filter(!is.na(Cert_clean_2526), Cert_clean_2526 != "") %>%
+  distinct(Cert_clean_2526, .keep_all = TRUE)
 ```
 
-## this section: final_no_match I'll use the email variable to perform the merge again.
+```{r}
+# Step 1: 确保 no match 数据里有干净的 CERT_1/2/3
+cert_no_match_2526 <- cert_no_match %>%
+  mutate(
+    no_match_row_id = row_number(),
+    CERT_1_clean = str_to_upper(str_replace_all(as.character(CERT_1), "[^A-Za-z0-9]", "")),
+    CERT_2_clean = str_to_upper(str_replace_all(as.character(CERT_2), "[^A-Za-z0-9]", "")),
+    CERT_3_clean = str_to_upper(str_replace_all(as.character(CERT_3), "[^A-Za-z0-9]", ""))
+  )
+```
+
+```{r}
+# Step 2: 用 CERT_1 匹配 df_cert_2526
+cert2526_match_1 <- cert_no_match_2526 %>%
+  left_join(
+    df_cert_2526,
+    by = c("CERT_1_clean" = "Cert_clean_2526")
+  ) %>%
+  mutate(
+    match_type_2526 = if_else(
+      !is.na(CERTIFICATE_2526),
+      "matched_2526_by_CERT_1",
+      NA_character_
+    )
+  )
+
+cert2526_no_match_1 <- cert2526_match_1 %>%
+  filter(is.na(CERTIFICATE_2526)) %>%
+  select(names(cert_no_match_2526))
+```
+
+```{r}
+# Step 3: CERT_1 没匹配上的，再用 CERT_2
+cert2526_match_2 <- cert2526_no_match_1 %>%
+  left_join(
+    df_cert_2526,
+    by = c("CERT_2_clean" = "Cert_clean_2526")
+  ) %>%
+  mutate(
+    match_type_2526 = if_else(
+      !is.na(CERTIFICATE_2526),
+      "matched_2526_by_CERT_2",
+      NA_character_
+    )
+  )
+
+cert2526_no_match_2 <- cert2526_match_2 %>%
+  filter(is.na(CERTIFICATE_2526)) %>%
+  select(names(cert_no_match_2526))
+```
+
+```{r}
+# Step 4: CERT_2 也没匹配上的，再用 CERT_3
+cert2526_match_3 <- cert2526_no_match_2 %>%
+  left_join(
+    df_cert_2526,
+    by = c("CERT_3_clean" = "Cert_clean_2526")
+  ) %>%
+  mutate(
+    match_type_2526 = if_else(
+      !is.na(CERTIFICATE_2526),
+      "matched_2526_by_CERT_3",
+      NA_character_
+    )
+  )
+```
+
+```{r}
+cert2526_final_match <- bind_rows(
+  cert2526_match_1 %>% filter(!is.na(CERTIFICATE_2526)),
+  cert2526_match_2 %>% filter(!is.na(CERTIFICATE_2526)),
+  cert2526_match_3
+)
+```
+
+```{r}
+cert2526_final_match %>%
+  count(match_type_2526) %>%
+  print(n = Inf, width = Inf)
+```
+
+```{r}
+cert2526_final_no_match <- cert2526_final_match %>%
+  filter(is.na(CERTIFICATE_2526)) %>%
+  select(names(cert_no_match_2526))
+```
+
+combine togeteher
+
+```{r}
+# 1. 原来 certificate 成功匹配的部分
+cert_success_old <- cert_final_match %>%
+  filter(!is.na(CERTIFICATE_FILE_NUMBER)) %>%
+  mutate(match_stage = "cert_original")
+
+# 2. 新一轮 2526 certificate 成功匹配的部分
+cert_success_2526 <- cert2526_final_match %>%
+  filter(!is.na(CERTIFICATE_2526)) %>%
+  mutate(match_stage = "cert_2526")
+```
+
+```{r}
+cert_final_match_updated <- bind_rows(
+  cert_success_old,
+  cert_success_2526
+)
+```
+
+```{r}
+cert_final_no_match_updated <- cert2526_final_match %>%
+  filter(is.na(CERTIFICATE_2526)) %>%
+  select(names(cert2526_final_no_match))
+```
+
+## this section: final_no_match I'll use the email variable to perform the merge again.  
+
+```{r}
+final_no_match <- cert_final_no_match_updated
+```
 
 ```{r}
 # Step 1: 先清理 final_no_match 里的 5 个 email 变量
@@ -533,7 +662,7 @@ df_email_no_match <- final_no_match %>%
 
 ```{r}
 # Step 2: 清理 df_cert 里的 EMAIL_ADDRESS_2526
-df_cert_email <- df_cert %>%
+df_cert_email <- staff_final_merged %>%
   mutate(
     EMAIL_ADDRESS_2526_clean = str_to_lower(
       str_trim(as.character(EMAIL_ADDRESS_2526))
@@ -660,7 +789,7 @@ email_final_match %>%
 
 ```
 
-There are still about 300 records here that cannot be merged. Given the situation, I think merging based solely on first and last name is too risky. I am considering whether we should include the MSID to create a new combination of first name, last name, school, and district to complete the merging.
+There are still about 1840 records here that cannot be merged. Given the situation, I think merging based solely on first and last name is too risky. I am considering whether we should include the MSID to create a new combination of first name, last name, school, and district to complete the merging.
 
 ```{r}
 cert_success <- final_match %>%
