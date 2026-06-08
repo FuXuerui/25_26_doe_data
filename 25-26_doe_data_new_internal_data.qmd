@@ -63,6 +63,10 @@ import data in local data
 raw_Literacy_Tx_UserforDoe <- read_csv("raw_Literacy_Tx_UserforDoe.csv")
 ```
 
+```{r}
+msid_all_school <- read_excel("msid_all_school.xlsx")
+```
+
 ## section 1: combine two staff data sets
 
 ## explore
@@ -354,11 +358,18 @@ write.csv(staff_final_merged,
 row.names = FALSE)
 ```
 
-## section 2 merge new internal data  the first match is using certificate number
+```{r}
+staff_final_merged <- read_csv("survey2_2526_twodatasets_merge.csv")
+```
+
+## section 2 merge new internal data the first match is using certificate number
 
 ```{r}
+#First, we have filtered out the treatment datasets for the three programs in the 2025-26 academic year.
 df_literacy <- raw_Literacy_Tx_UserforDoe %>%
-  filter(PL_2526_Tx == 1) %>%
+  filter(PL_2526_Tx == 1|
+         LM_2526_Tx == 1|
+         MC_2526_Tx == 1 ) %>%
   mutate(
     CERT_1_clean = str_to_upper(
       str_replace_all(as.character(CERT_1), "[^A-Za-z0-9]", "")
@@ -370,7 +381,7 @@ df_literacy <- raw_Literacy_Tx_UserforDoe %>%
       str_replace_all(as.character(CERT_3), "[^A-Za-z0-9]", "")
     )
   )
-
+#To prevent issues during data merging, we're deleting entries from the staff dataset that don't have a certificate number.
 df_cert <- staff_final_merged %>%
   mutate(
     Cert_clean = str_to_upper(
@@ -386,6 +397,16 @@ df_cert <- staff_final_merged %>%
 ```
 
 ```{r}
+df_literacy %>%
+  count(
+    PL_2526_Tx,
+    LM_2526_Tx,
+    MC_2526_Tx,
+    sort = TRUE
+  )
+```
+
+```{r}
 df_cert %>%
   count(Cert_clean, sort = TRUE) %>%
   filter(n > 1)
@@ -394,11 +415,14 @@ df_cert %>%
 ```{r}
 df_literacy %>%
   count(CERT_1_clean, sort = TRUE) %>%
-  filter(n > 1)
+  filter(n > 1) %>% 
+  print(Inf)
 ```
 
+## matching part 1  : certificate 
+
 ```{r}
-match_1 <- df_literacy %>%
+cert_match_1 <- df_literacy %>%
   left_join(
     df_cert,
     by = c("CERT_1_clean" = "Cert_clean")
@@ -414,13 +438,13 @@ match_1 <- df_literacy %>%
 ```
 
 ```{r}
-no_match_1 <- match_1 %>%
+cert_no_match_1 <- cert_match_1 %>%
   filter(is.na(CERTIFICATE_FILE_NUMBER)) %>%
   select(names(df_literacy))
 ```
 
 ```{r}
-match_2 <- no_match_1 %>%
+cert_match_2 <- cert_no_match_1 %>%
   left_join(
     df_cert,
     by = c("CERT_2_clean" = "Cert_clean")
@@ -434,14 +458,14 @@ match_2 <- no_match_1 %>%
   )
 
 # 找出第二轮仍然没有匹配上的原始 Literacy 行
-no_match_2 <- match_2 %>%
+cert_no_match_2 <- cert_match_2 %>%
   filter(is.na(CERTIFICATE_FILE_NUMBER)) %>%
   select(names(df_literacy))
 ```
 
 ```{r}
 # Step 5: 第三轮，用 CERT_3 匹配第二轮失败的个案
-match_3 <- no_match_2 %>%
+cert_match_3 <- cert_no_match_2 %>%
   left_join(
     df_cert,
     by = c("CERT_3_clean" = "Cert_clean")
@@ -456,32 +480,42 @@ match_3 <- no_match_2 %>%
 ```
 
 ```{r}
-final_match <- bind_rows(
-  match_1 %>% filter(!is.na(CERTIFICATE_FILE_NUMBER)),
-  match_2 %>% filter(!is.na(CERTIFICATE_FILE_NUMBER)),
-  match_3
+cert_final_match <- bind_rows(
+  cert_match_1 %>% filter(!is.na(CERTIFICATE_FILE_NUMBER)),
+  cert_match_2 %>% filter(!is.na(CERTIFICATE_FILE_NUMBER)),
+  cert_match_3
 )
 ```
 
 ```{r}
-final_no_match <- final_match %>%
+cert_no_match <- cert_final_match %>%
   filter(is.na(CERTIFICATE_FILE_NUMBER)) %>%
   select(names(df_literacy))
 ```
 
 ```{r}
-final_match %>%
+cert_final_match %>%
   count(match_type)
 ```
 
 ```{r}
-final_no_match %>%
+cert_no_match %>%
   count(CERT_1_clean)
 ```
 
-#####  Note  In the raw data, there are 701 observations where that PL_2526_Tx equals 1. By merging the certificate numbers, we've successfully combined 238 records in total.  Among the remaining data that failed to merge, 394 records contain NA values. 
+##### 
 
-##  this section: final_no_match  I'll use the email variable to perform the merge again.
+After updating the treatment dataset, it now contains a total of 7,721 observations.
+
+Even after merging by certificate number, there are still 3,258 observations that could not be matched. For the next step, I will use email addresses to perform the subsequent merge.
+
+## certificate_2526
+
+```{r}
+cert_no_match
+```
+
+## this section: final_no_match I'll use the email variable to perform the merge again.
 
 ```{r}
 # Step 1: 先清理 final_no_match 里的 5 个 email 变量
@@ -660,6 +694,196 @@ all_success %>%
 
 ```{r}
 write.csv(all_success,"pl_2526_txwith_staff_inf.csv",row.names = FALSE)
+```
+
+this is the tempory attempt to continue merging data
+
+```{r}
+names(msid_all_school)
+```
+
+```{r}
+all_failed %>% 
+  count(COUNTY_1)
+```
+
+```{r}
+msid <- msid_all_school %>% 
+  add_suffix_except(
+    suffix = "_msid"
+  )
+```
+
+```{r}
+msid_district <- msid %>%
+  mutate(
+    district_name_clean = str_to_upper(str_trim(DISTRICT_NAME_msid))
+  ) %>%
+  filter(
+    !is.na(district_name_clean),
+    district_name_clean != ""
+  ) %>%
+  distinct(
+    district_name_clean,
+    DISTRICT_msid,
+    .keep_all = TRUE
+  )
+
+```
+
+```{r}
+msid_district <- msid_district %>% 
+  select(DISTRICT_msid,district_name_clean)
+```
+
+```{r}
+# Step 2: 清理 all_failed 里的 COUNTY_1/2/3
+all_failed_county <- all_failed %>%
+  mutate(
+    failed_row_id = row_number(),
+    
+    COUNTY_1_clean = str_to_upper(str_trim(as.character(COUNTY_1))),
+    COUNTY_2_clean = str_to_upper(str_trim(as.character(COUNTY_2))),
+    COUNTY_3_clean = str_to_upper(str_trim(as.character(COUNTY_3)))
+  )
+```
+
+```{r}
+county_match_1 <- all_failed_county %>%
+  left_join(
+    msid_district,
+    by = c("COUNTY_1_clean" = "district_name_clean")
+  ) %>%
+  mutate(
+    county_match_type = if_else(
+      !is.na(DISTRICT_msid),
+      "matched_by_COUNTY_1",
+      NA_character_
+    )
+  )
+
+county_no_match_1 <- county_match_1 %>%
+  filter(is.na(DISTRICT_msid)) %>%
+  select(names(all_failed_county))
+```
+
+```{r}
+county_match_2 <- county_no_match_1 %>%
+  left_join(
+    msid_district,
+    by = c("COUNTY_2_clean" = "district_name_clean")
+  ) %>%
+  mutate(
+    county_match_type = if_else(
+      !is.na(DISTRICT_msid),
+      "matched_by_COUNTY_2",
+      NA_character_
+    )
+  )
+
+county_no_match_2 <- county_match_2 %>%
+  filter(is.na(DISTRICT_msid)) %>%
+  select(names(all_failed_county))
+```
+
+```{r}
+county_match_3 <- county_no_match_2 %>%
+  left_join(
+    msid_district,
+    by = c("COUNTY_3_clean" = "district_name_clean")
+  ) %>%
+  mutate(
+    county_match_type = if_else(
+      !is.na(DISTRICT_msid),
+      "matched_by_COUNTY_3",
+      NA_character_
+    )
+  )
+```
+
+```{r}
+all_failed_with_district <- bind_rows(
+  county_match_1 %>% filter(!is.na(DISTRICT_msid)),
+  county_match_2 %>% filter(!is.na(DISTRICT_msid)),
+  county_match_3
+)
+```
+
+```{r}
+all_failed_with_district %>%
+  count(county_match_type) %>%
+  print(n = Inf)
+```
+
+```{r}
+names(all_failed_with_district)
+```
+
+```{r}
+names(staff_final_merged)
+```
+
+```{r}
+# Step 1: 清理 all_failed_with_district
+failed_name_district <- all_failed_with_district %>%
+  mutate(
+    NAME_key_first_clean = str_to_upper(str_trim(as.character(NAME_key_first))),
+    NAME_key_last_clean  = str_to_upper(str_trim(as.character(NAME_key_last))),
+    DISTRICT_msid_clean  = str_pad(
+      as.character(DISTRICT_msid),
+      width = 2,
+      side = "left",
+      pad = "0"
+    )
+  )
+```
+
+```{r}
+# Step 2: 清理 staff_final_merged
+staff_name_district <- staff_final_merged %>%
+  mutate(
+    FIRST_NAME_clean = str_to_upper(str_trim(as.character(FIRST_NAME))),
+    LAST_NAME_clean  = str_to_upper(str_trim(as.character(LAST_NAME))),
+    DISTRICT_SERVICE_2526_clean = str_pad(
+      as.character(DISTRICT_SERVICE_2526),
+      width = 2,
+      side = "left",
+      pad = "0"
+    )
+  ) %>%
+  filter(
+    !is.na(FIRST_NAME_clean),
+    FIRST_NAME_clean != "",
+    !is.na(LAST_NAME_clean),
+    LAST_NAME_clean != "",
+    !is.na(DISTRICT_SERVICE_2526_clean),
+    DISTRICT_SERVICE_2526_clean != ""
+  )
+```
+
+```{r}
+staff_name_district %>%
+  count(FIRST_NAME_clean, LAST_NAME_clean, DISTRICT_SERVICE_2526_clean, sort = TRUE) %>%
+  filter(n > 1)
+```
+
+```{r}
+name_district_match <- failed_name_district %>%
+  left_join(
+    staff_name_district,
+    by = c(
+      "NAME_key_first_clean" = "FIRST_NAME_clean",
+      "NAME_key_last_clean"  = "LAST_NAME_clean",
+      "DISTRICT_msid_clean"  = "DISTRICT_SERVICE_2526_clean"
+    )
+  ) 
+```
+
+```{r}
+
+name_district_no_match <- name_district_match %>%
+  filter(is.na(teacher_id_n.y))
+
 ```
 
 ## Section 3 combing student data
