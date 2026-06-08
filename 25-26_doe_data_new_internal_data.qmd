@@ -806,3 +806,7 @@ write.csv(treatment_data_final,
           "main_treatment_data_initial.csv",
           row.names = FALSE)
 ```
+
+```{r}
+dbDisconnect(con)
+```
