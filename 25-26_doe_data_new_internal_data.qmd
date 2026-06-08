@@ -1,0 +1,808 @@
+---
+title: "25-26_doe_data"
+format: html
+---
+
+## Import package and trying to connect snowflake
+
+```{r}
+library(tidyverse)
+library(readxl)
+library(janitor)
+library(stringr)
+library(purrr)
+library(stringdist)
+library(openxlsx)
+library(stringr)
+#The following package is for connecting to Snowflake.
+library(DBI)
+library(odbc)
+library(openssl)  # To read private key
+```
+
+## Connect to Snowflake
+
+```{r}
+# Connect to Snowflake using key-pair authentication
+
+con <- dbConnect(odbc::odbc(),
+                 Driver = "SnowflakeDSIIDriver", #from UFIT
+                 Server = "ufl-datahub.snowflakecomputing.com", #from LC Data team
+                 UID = "xu.rui@ufl.edu", #from UFIT
+                 authenticator = "externalbrowser", #from UFIT
+                 Warehouse     = "REPORTING", #from LC Data team
+                 Database      = "PUB_LAKE_LASTINGER" #can specify specific database needing to access
+                #Schema        = "ADD" #can specify specific Schema - aka folders - needing to access
+)
+
+# Look in Connections - top right RStudio - for Database/Schema list
+```
+
+## Import data in snowflake
+
+```{r}
+staff <- tbl(con,dbplyr::in_schema("RAW_DOE","01_15_2026_STAFF"))
+```
+
+```{r}
+staff_suffix <- tbl(con,dbplyr::in_schema("RAW_DOE","02_13_2026_PERA_4472B_STAFF_CERTIFICATION_DATA_2025_26_FS2"))
+```
+
+```{r}
+teacher_course <- tbl(con,dbplyr::in_schema("RAW_DOE","01_15_2026_TEACHER_COURSE"))
+```
+
+```{r}
+student_demo <-  tbl(con,dbplyr::in_schema("RAW_DOE","01_15_2026_STUDENT_DEMO"))
+```
+
+import data in local data
+
+```{r}
+
+raw_Literacy_Tx_UserforDoe <- read_csv("raw_Literacy_Tx_UserforDoe.csv")
+```
+
+## section 1: combine two staff data sets
+
+## explore
+
+```{r}
+staff %>%
+  count(TEACHER_ID) %>%
+  filter(n > 1)
+```
+
+```{r}
+qc_teacher_id <- staff %>%
+  summarise(
+    total_rows = n(),
+    unique_teacher = n_distinct(TEACHER_ID),
+    missing_teacher = sum(ifelse(is.na(TEACHER_ID), 1L, 0L), na.rm = TRUE)#note: The is.na function cannot be recognized in Snowflake. Therefore, we must switch to a method that is compatible with sql.
+  ) %>%
+  collect()
+
+qc_teacher_id
+
+
+```
+
+```{r}
+qc_teacher_id_1 <- staff_suffix %>%
+  summarise(
+    total_rows = n(),
+    unique_teacher = n_distinct(TEACHER_ID),
+    missing_teacher = sum(ifelse(is.na(TEACHER_ID), 1L, 0L), na.rm = TRUE)#same issue
+  ) %>%
+  collect()
+
+qc_teacher_id_1
+
+```
+
+Filter out duplicate data\
+function:
+
+```{r}
+
+
+# =========================================================
+# Function: split unique TEACHER_ID rows and duplicated rows
+# 功能：
+# 1. 根据 TEACHER_ID 统计重复情况
+# 2. 保留唯一 TEACHER_ID 的数据
+# 3. 把重复 TEACHER_ID 的数据单独保存
+# 4. 给数据加上来源标签 source
+# =========================================================
+split_teacher_data <- function(df, source_name) {
+  
+  # 第一步：计算每个 TEACHER_ID 出现的次数
+  teacher_count <- df %>%
+    count(TEACHER_ID, name = "teacher_id_n")
+  
+  # 第二步：把次数合并回原始数据
+  df_with_count <- df %>%
+    left_join(teacher_count, by = "TEACHER_ID")
+  
+  # 第三步：保留 TEACHER_ID 只出现 1 次的行
+  df_unique <- df_with_count %>%
+    filter(teacher_id_n == 1) %>%
+    mutate(source = source_name)
+  
+  # 第四步：把重复的 TEACHER_ID 行单独保存
+  df_duplicate <- df_with_count %>%
+    filter(teacher_id_n > 1) %>%
+    mutate(source = source_name)
+  
+  # 第五步：重复 TEACHER_ID 的 summary（每个ID重复几次）
+  dup_summary <- teacher_count %>%
+    filter(teacher_id_n > 1) %>%
+    arrange(desc(teacher_id_n))
+  
+  # 返回一个 list，方便后续调用
+  return(list(
+    unique_data = df_unique,
+    duplicate_data = df_duplicate,
+    duplicate_summary = dup_summary
+  ))
+}
+```
+
+```{r}
+# 对第一个数据库处理
+staff_2526_result <- split_teacher_data(
+  df = staff,
+  source_name = "staff"
+)
+
+# 对第二个数据库处理
+staff_july_result <- split_teacher_data(
+  df = staff_suffix,
+  source_name = "staff_suffix"
+)
+```
+
+```{r}
+# 第一个数据库：唯一 / 重复 / 重复summary
+staff_2526_unique <- staff_2526_result$unique_data
+staff_2526_duplicate <- staff_2526_result$duplicate_data
+staff_2526_dup_summary <- staff_2526_result$duplicate_summary
+
+# 第二个数据库：唯一 / 重复 / 重复summary
+staff_july_unique <- staff_july_result$unique_data
+staff_july_duplicate <- staff_july_result$duplicate_data
+staff_july_dup_summary <- staff_july_result$duplicate_summary
+```
+
+export duplication
+
+```{r}
+write.csv(staff_2526_duplicate, "staff_2526_duplicate.csv", row.names = FALSE)
+write.csv(staff_july_duplicate, "staff_suffix.csv", row.names = FALSE)
+```
+
+export unique teacher\
+
+```{r}
+write.csv(staff_2526_unique,"staff_2526_uqniue.csv", row.names = FALSE)
+write.csv(staff_july_unique,"staff_suffix_unique.csv", row.names = FALSE)
+```
+
+function add suffix
+
+```{r}
+# Function: add suffix to all variables except key columns
+# 功能：
+# 给所有列加后缀，但保留 key（默认 TEACHER_ID 不变）
+# =========================================================
+add_suffix_except <- function(df, suffix, keep = "TEACHER_ID") {
+  
+  df_renamed <- df %>%
+    rename_with(
+      .fn = ~ ifelse(.x %in% keep, .x, paste0(.x, suffix))
+    )
+  
+  return(df_renamed)
+}
+```
+
+```{r}
+staff_2526_unique_sfx <- add_suffix_except(
+  df = staff_2526_unique,
+  suffix = "_2526"
+)
+```
+
+## unique data merge
+
+```{r}
+staff_merged <- staff_july_unique %>%
+  full_join(
+    staff_2526_unique_sfx,
+    by = "TEACHER_ID"
+  )
+```
+
+## qc
+
+```{r}
+staff_merged %>%
+  summarise(
+    total_rows = n(),
+    unique_teacher = n_distinct(TEACHER_ID)
+  )
+```
+
+```{r}
+
+staff_merged_qc <- staff_merged %>%
+  mutate(
+    source_flag = case_when(
+      !is.na(source) & !is.na(source_2526) ~ "both",
+      !is.na(source) & is.na(source_2526) ~ "only_july",
+      is.na(source) & !is.na(source_2526) ~ "only_2526",
+      TRUE ~ NA_character_
+    )
+  )
+
+```
+
+## For duplication data merge
+
+Check the combination of district and teacher id
+
+```{r}
+staff_july_duplicate_check <- staff_july_duplicate %>%
+  count(TEACHER_ID, DISTRICT_SERVICE, name = "n") %>%
+  filter(n > 1) %>%
+  arrange(desc(n))
+
+staff_july_duplicate_check
+```
+
+```{r}
+staff_2526_duplicate_check <- staff_2526_duplicate %>%
+  count(TEACHER_ID, DISTRICT_SERVICE, name = "n") %>%
+  filter(n > 1) %>%
+  arrange(desc(n))
+
+staff_2526_duplicate_check
+```
+
+```{r}
+staff_july_duplicate %>%
+  summarise(
+    total_rows = n(),
+    distinct_teacher = n_distinct(TEACHER_ID),
+    distinct_teacher_district = n_distinct(paste(TEACHER_ID, DISTRICT_SERVICE, sep = "__"))
+  )
+```
+
+```{r}
+staff_2526_duplicate %>%
+  summarise(
+    total_rows = n(),
+    distinct_teacher = n_distinct(TEACHER_ID),
+    distinct_teacher_district = n_distinct(paste(TEACHER_ID, DISTRICT_SERVICE, sep = "__"))
+  )
+```
+
+```{r}
+nrow(staff_july_duplicate_check)
+nrow(staff_2526_duplicate_check)
+```
+
+```{r}
+staff_2526_duplicate_sfx <- add_suffix_except(
+  df = staff_2526_duplicate,
+  suffix = "_2526",
+  keep = c("TEACHER_ID", "DISTRICT_SERVICE")
+)
+```
+
+```{r}
+staff_duplicate_merged <- staff_july_duplicate %>%
+  full_join(
+    staff_2526_duplicate_sfx,
+    by = c("TEACHER_ID", "DISTRICT_SERVICE")
+  )
+```
+
+```{r}
+staff_duplicate_merged <- staff_duplicate_merged %>%
+  mutate(
+    source_flag = case_when(
+      !is.na(source) & !is.na(source_2526) ~ "both",
+      !is.na(source) & is.na(source_2526) ~ "only_july",
+      is.na(source) & !is.na(source_2526) ~ "only_2526",
+      TRUE ~ NA_character_
+    )
+  )
+```
+
+```{r}
+staff_duplicate_merged %>%
+  count(source_flag)
+```
+
+```{r}
+setdiff(colnames(staff_merged), colnames(staff_duplicate_merged))
+setdiff(colnames(staff_duplicate_merged), colnames(staff_merged))
+```
+
+```{r}
+staff_duplicate_merged <- staff_duplicate_merged %>%
+  mutate(DISTRICT_SERVICE_2526 = DISTRICT_SERVICE)
+```
+
+```{r}
+#note: The bind_row function cannot be used directly on Snowflake. Therefore, we need to replace it with a compatible Snowflake function called union_all.
+staff_final_merged <- union_all(
+  staff_merged,
+  staff_duplicate_merged
+) %>% 
+  collect()
+```
+
+```{r}
+staff_final_merged %>% count(teacher_id_n_2526)
+```
+
+```{r}
+write.csv(staff_final_merged,
+      "survey2_2526_twodatasets_merge.csv",
+row.names = FALSE)
+```
+
+## section 2 merge new internal data  the first match is using certificate number
+
+```{r}
+df_literacy <- raw_Literacy_Tx_UserforDoe %>%
+  filter(PL_2526_Tx == 1) %>%
+  mutate(
+    CERT_1_clean = str_to_upper(
+      str_replace_all(as.character(CERT_1), "[^A-Za-z0-9]", "")
+    ),
+    CERT_2_clean = str_to_upper(
+      str_replace_all(as.character(CERT_2), "[^A-Za-z0-9]", "")
+    ),
+    CERT_3_clean = str_to_upper(
+      str_replace_all(as.character(CERT_3), "[^A-Za-z0-9]", "")
+    )
+  )
+
+df_cert <- staff_final_merged %>%
+  mutate(
+    Cert_clean = str_to_upper(
+      str_replace_all(
+        as.character(CERTIFICATE_FILE_NUMBER),
+        "[^A-Za-z0-9]",
+        ""
+      )
+    )
+  ) %>%
+  filter(!is.na(Cert_clean), Cert_clean != "") %>%
+  distinct(Cert_clean, .keep_all = TRUE)
+```
+
+```{r}
+df_cert %>%
+  count(Cert_clean, sort = TRUE) %>%
+  filter(n > 1)
+```
+
+```{r}
+df_literacy %>%
+  count(CERT_1_clean, sort = TRUE) %>%
+  filter(n > 1)
+```
+
+```{r}
+match_1 <- df_literacy %>%
+  left_join(
+    df_cert,
+    by = c("CERT_1_clean" = "Cert_clean")
+  ) %>%
+  mutate(
+    match_type = if_else(
+      !is.na(CERTIFICATE_FILE_NUMBER),
+      "matched_by_CERT_1",
+      NA_character_
+    )
+  )
+
+```
+
+```{r}
+no_match_1 <- match_1 %>%
+  filter(is.na(CERTIFICATE_FILE_NUMBER)) %>%
+  select(names(df_literacy))
+```
+
+```{r}
+match_2 <- no_match_1 %>%
+  left_join(
+    df_cert,
+    by = c("CERT_2_clean" = "Cert_clean")
+  ) %>%
+  mutate(
+    match_type = if_else(
+      !is.na(CERTIFICATE_FILE_NUMBER),
+      "matched_by_CERT_2",
+      NA_character_
+    )
+  )
+
+# 找出第二轮仍然没有匹配上的原始 Literacy 行
+no_match_2 <- match_2 %>%
+  filter(is.na(CERTIFICATE_FILE_NUMBER)) %>%
+  select(names(df_literacy))
+```
+
+```{r}
+# Step 5: 第三轮，用 CERT_3 匹配第二轮失败的个案
+match_3 <- no_match_2 %>%
+  left_join(
+    df_cert,
+    by = c("CERT_3_clean" = "Cert_clean")
+  ) %>%
+  mutate(
+    match_type = if_else(
+      !is.na(CERTIFICATE_FILE_NUMBER),
+      "matched_by_CERT_3",
+      NA_character_
+    )
+  )
+```
+
+```{r}
+final_match <- bind_rows(
+  match_1 %>% filter(!is.na(CERTIFICATE_FILE_NUMBER)),
+  match_2 %>% filter(!is.na(CERTIFICATE_FILE_NUMBER)),
+  match_3
+)
+```
+
+```{r}
+final_no_match <- final_match %>%
+  filter(is.na(CERTIFICATE_FILE_NUMBER)) %>%
+  select(names(df_literacy))
+```
+
+```{r}
+final_match %>%
+  count(match_type)
+```
+
+```{r}
+final_no_match %>%
+  count(CERT_1_clean)
+```
+
+#####  Note  In the raw data, there are 701 observations where that PL_2526_Tx equals 1. By merging the certificate numbers, we've successfully combined 238 records in total.  Among the remaining data that failed to merge, 394 records contain NA values. 
+
+##  this section: final_no_match  I'll use the email variable to perform the merge again.
+
+```{r}
+# Step 1: 先清理 final_no_match 里的 5 个 email 变量
+df_email_no_match <- final_no_match %>%
+  mutate(
+    literacy_email_row_id = row_number(),
+    
+    username_clean = str_to_lower(str_trim(as.character(username))),
+    username_2_clean = str_to_lower(str_trim(as.character(username_2))),
+    WORKEMAIL_1_clean = str_to_lower(str_trim(as.character(WORKEMAIL_1))),
+    WORKEMAIL_2_clean = str_to_lower(str_trim(as.character(WORKEMAIL_2))),
+    WORKEMAIL_3_clean = str_to_lower(str_trim(as.character(WORKEMAIL_3)))
+  )
+```
+
+```{r}
+# Step 2: 清理 df_cert 里的 EMAIL_ADDRESS_2526
+df_cert_email <- df_cert %>%
+  mutate(
+    EMAIL_ADDRESS_2526_clean = str_to_lower(
+      str_trim(as.character(EMAIL_ADDRESS_2526))
+    )
+  ) %>%
+  filter(
+    !is.na(EMAIL_ADDRESS_2526_clean),
+    EMAIL_ADDRESS_2526_clean != ""
+  ) %>%
+  distinct(EMAIL_ADDRESS_2526_clean, .keep_all = TRUE)
+```
+
+```{r}
+email_match_1 <- df_email_no_match %>%
+  left_join(
+    df_cert_email,
+    by = c("username_clean" = "EMAIL_ADDRESS_2526_clean")
+  ) %>%
+  mutate(
+    match_type = if_else(
+      !is.na(EMAIL_ADDRESS_2526),
+      "matched_by_username",
+      NA_character_
+    )
+  )
+
+email_no_match_1 <- email_match_1 %>%
+  filter(is.na(EMAIL_ADDRESS_2526)) %>%
+  select(names(df_email_no_match))
+```
+
+```{r}
+email_match_2 <- email_no_match_1 %>%
+  left_join(
+    df_cert_email,
+    by = c("username_2_clean" = "EMAIL_ADDRESS_2526_clean")
+  ) %>%
+  mutate(
+    match_type = if_else(
+      !is.na(EMAIL_ADDRESS_2526),
+      "matched_by_username_2",
+      NA_character_
+    )
+  )
+
+email_no_match_2 <- email_match_2 %>%
+  filter(is.na(EMAIL_ADDRESS_2526)) %>%
+  select(names(df_email_no_match))
+```
+
+```{r}
+email_match_3 <- email_no_match_2 %>%
+  left_join(
+    df_cert_email,
+    by = c("WORKEMAIL_1_clean" = "EMAIL_ADDRESS_2526_clean")
+  ) %>%
+  mutate(
+    match_type = if_else(
+      !is.na(EMAIL_ADDRESS_2526),
+      "matched_by_WORKEMAIL_1",
+      NA_character_
+    )
+  )
+
+email_no_match_3 <- email_match_3 %>%
+  filter(is.na(EMAIL_ADDRESS_2526)) %>%
+  select(names(df_email_no_match))
+```
+
+```{r}
+email_match_4 <- email_no_match_3 %>%
+  left_join(
+    df_cert_email,
+    by = c("WORKEMAIL_2_clean" = "EMAIL_ADDRESS_2526_clean")
+  ) %>%
+  mutate(
+    match_type = if_else(
+      !is.na(EMAIL_ADDRESS_2526),
+      "matched_by_WORKEMAIL_2",
+      NA_character_
+    )
+  )
+
+email_no_match_4 <- email_match_4 %>%
+  filter(is.na(EMAIL_ADDRESS_2526)) %>%
+  select(names(df_email_no_match))
+```
+
+```{r}
+email_match_5 <- email_no_match_4 %>%
+  left_join(
+    df_cert_email,
+    by = c("WORKEMAIL_3_clean" = "EMAIL_ADDRESS_2526_clean")
+  ) %>%
+  mutate(
+    match_type = if_else(
+      !is.na(EMAIL_ADDRESS_2526),
+      "matched_by_WORKEMAIL_3",
+      NA_character_
+    )
+  )
+```
+
+```{r}
+email_final_match <- bind_rows(
+  email_match_1 %>% filter(!is.na(EMAIL_ADDRESS_2526)),
+  email_match_2 %>% filter(!is.na(EMAIL_ADDRESS_2526)),
+  email_match_3 %>% filter(!is.na(EMAIL_ADDRESS_2526)),
+  email_match_4 %>% filter(!is.na(EMAIL_ADDRESS_2526)),
+  email_match_5
+)
+```
+
+```{r}
+email_final_no_match <- email_final_match %>%
+  filter(is.na(EMAIL_ADDRESS_2526)) %>%
+  select(names(df_email_no_match))
+```
+
+```{r}
+email_final_match %>%
+  count(match_type) %>% 
+  print(n = Inf, width = Inf)
+
+```
+
+There are still about 300 records here that cannot be merged. Given the situation, I think merging based solely on first and last name is too risky. I am considering whether we should include the MSID to create a new combination of first name, last name, school, and district to complete the merging.
+
+```{r}
+cert_success <- final_match %>%
+  filter(!is.na(CERTIFICATE_FILE_NUMBER)) %>%
+  mutate(match_stage = "certificate")
+```
+
+```{r}
+email_success <- email_final_match %>%
+  filter(!is.na(EMAIL_ADDRESS_2526)) %>%
+  mutate(match_stage = "email")
+```
+
+```{r}
+all_success <- bind_rows(
+  cert_success,
+  email_success
+)
+```
+
+```{r}
+all_failed <- email_final_match %>%
+  filter(is.na(EMAIL_ADDRESS_2526))
+```
+
+```{r}
+all_success %>%
+  count(match_type, sort = TRUE) %>% 
+  print(n = Inf, width = Inf)
+```
+
+```{r}
+write.csv(all_success,"pl_2526_txwith_staff_inf.csv",row.names = FALSE)
+```
+
+## Section 3 combing student data
+
+```{r}
+#Load TeacherCourse locally.
+teacher_course_local <- teacher_course %>% collect()
+```
+
+```{r}
+teacher_course_local <- teacher_course_local %>% 
+  add_suffix_except(
+  suffix = "_tc",
+  keep = "TEACHER_ID"
+  )
+```
+
+```{r}
+treatment_data <- all_success %>% 
+  left_join(teacher_course_local,
+            by=c("TEACHER_ID",
+            "DISTRICT_SERVICE"="DISTRICT_INST_tc"))
+```
+
+```{r}
+treatment_data %>%
+  count(TEACHER_ID, DISTRICT_SERVICE) %>%
+  filter(n > 1)
+```
+
+```{r}
+treatment_data %>%
+  filter(!is.na(TEACHER_ID) & is.na(FLEID_tc)) %>%
+  summarise(n = n())
+```
+
+```{r}
+treatment_no_studentinfo <- treatment_data %>%
+  filter(!is.na(TEACHER_ID) & is.na(FLEID_tc))
+```
+
+```{r}
+missing_fle <- treatment_data %>%
+  filter(!is.na(TEACHER_ID) & is.na(FLEID_tc)) %>%
+  select(TEACHER_ID) %>%
+  distinct()
+```
+
+```{r}
+teacher_course_check <- teacher_course_local %>%
+  filter(TEACHER_ID %in% missing_fle$TEACHER_ID)
+```
+
+```{r}
+write.csv(treatment_no_studentinfo,
+        "teachers_without_students_info.csv",
+       row.names = FALSE)
+```
+
+The inspection is complete. I have confirmed that these teacher IDs are not in the teacher Courses data. need to double check and discuss how to handle this issue.
+
+next , I will combine student demo and deduplication
+
+```{r}
+treatment_data <- treatment_data %>% 
+  mutate(
+    DISTRICT_tc = as.numeric(as.character(DISTRICT_tc)),
+    SCHOOL_tc   = as.numeric(as.character(SCHOOL_tc)),
+    SchoolID_tc = DISTRICT_tc * 10000 + SCHOOL_tc,
+    UniqueID    = paste0(FLEID_tc, SchoolID_tc)
+  )
+```
+
+```{r}
+student_demo_local <- student_demo %>% collect()
+```
+
+```{r}
+student_demo_local <- student_demo_local %>% 
+  add_suffix_except(
+  suffix = "_demo",
+  keep = "FLEID"
+  )
+```
+
+```{r}
+student_demo_local <- student_demo_local %>% 
+  mutate(
+    DISTRICT_demo = as.numeric(as.character(DISTRICT_demo)),
+    SCHOOL_demo   = as.numeric(as.character(SCHOOL_demo)),
+    SchoolID_demo = DISTRICT_demo * 10000 + SCHOOL_demo,
+    UniqueID    = paste0(FLEID, SchoolID_demo)
+  )
+```
+
+```{r}
+dup_in_demo <- student_demo_local %>%
+  count(UniqueID) %>%
+  filter(n > 1) %>%
+  pull(UniqueID)
+```
+
+deduplication strategy 1 :deduplication in student_demo drop district_inst ==71
+
+```{r}
+student_demo_clean <- student_demo_local %>%
+  group_by(UniqueID) %>%
+  filter(!(n() > 1 & DISTRICT_INST_demo == 71)) %>%
+  ungroup()
+```
+
+```{r}
+nrow(student_demo_local)
+nrow(student_demo_clean)
+```
+
+```{r}
+student_demo_clean %>%
+  count(UniqueID) %>%
+  filter(n > 1) %>%
+  arrange(desc(n))# need to manually check
+```
+
+```{r}
+treatment_data_final <- treatment_data %>% 
+  left_join(student_demo_clean,
+            by="UniqueID")
+```
+
+```{r}
+ treatment_data_final %>%
+  count(UniqueID) %>%
+  filter(n > 1) %>%
+  arrange(desc(n))
+```
+
+```{r}
+treatment_data_final %>% 
+  filter(UniqueID =="FL000007593932180301")
+```
+
+```{r}
+write.csv(treatment_data_final,
+          "main_treatment_data_initial.csv",
+          row.names = FALSE)
+```
